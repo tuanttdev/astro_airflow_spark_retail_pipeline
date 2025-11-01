@@ -1,0 +1,89 @@
+# docker-compose.override.yml
+
+services:
+
+  spark-master:
+    image: apache/spark:4.0.1
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master -h spark-master
+    hostname: spark-master
+
+    environment:
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8081
+      SPARK_SSL_ENABLED: no
+      SPARK_MODE: master
+    ports:
+      - "8081:8081"
+      - "7077:7077"
+    volumes:
+      - ./include:/usr/local/airflow/include
+    networks:
+      - airflow
+
+  spark-worker-1:
+    image: apache/spark:4.0.1
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    hostname: spark-worker-1
+    environment:
+      SPARK_WORKER_CORES: 1
+      SPARK_WORKER_MEMORY: 1g
+      SPARK_WORKER_WEBUI_PORT: 8082
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./include:/usr/local/airflow/include
+    depends_on:
+      - spark-master
+    networks:
+          - airflow
+
+
+
+
+  postgres_16:
+    image: postgres:16
+    container_name: retail_pg16
+    restart: unless-stopped # stopped manually then it don't auto start again
+    environment:
+      POSTGRES_USER: ${PG_USER:-retail}  # lay tu bien moi truong PG_USER hoac file .env hoac mac dinh la retail (gia tri sau dau - )
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-retailpw}
+      POSTGRES_DB: ${PG_DB:-retaildb}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "${PG_PORT:-5433}:5432"
+    volumes:
+      - retail_pg16_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${PG_USER:-retail} -d ${PG_DB:-retaildb}" ]
+      #      test: ["CMD", "pg_isready" , "-U" , "retail" , "-d" , "retaildb"]
+      #      test: ["CMD-SHELL", "pg_isready -U appuser -d appdb || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - airflow
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: retail_ch24
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CH_DB:-retail}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "${CH_HTTP_PORT:-8123}:8123"   # HTTP
+      - "${CH_TCP_PORT:-9000}:9000"    # Native
+    volumes:
+      - retail_ch24_data2:/var/lib/clickhouse
+      - ~/clickhouse_logs:/var/log/clickhouse-server/
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8123/ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - airflow
+
+volumes:
+  retail_pg16_data:
+  retail_ch24_data2:
