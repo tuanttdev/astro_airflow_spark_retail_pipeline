@@ -19,8 +19,8 @@ CH_PW   = os.getenv("CH_PASSWORD","")
 
 ##------ DEFAULT DATA VALUE FOR NULL HANDLING ------
 UNKNOWN_STRING_VALUE = os.getenv( "UNKNOWN_STRING_VALUE" , 'UNKNOWN')
-UNKNOWN_NUMBER_VALUE = os.getenv( "UNKNOWN_NUMBER_VALUE" , 0)
-UNKNOWN_ID = os.getenv( "UNKNOWN_ID" , 0)
+UNKNOWN_NUMBER_VALUE = int(os.getenv( "UNKNOWN_NUMBER_VALUE" , "0"))
+UNKNOWN_ID = int(os.getenv( "UNKNOWN_ID" , 0))
 
 def spark(app="Retail Spark Loader"):
     return (SparkSession.builder.appName(app)
@@ -132,16 +132,15 @@ def ensure_wh_schema():
     """)
 
 # ---------- Loaders (Spark) ----------
-def load_dim_channel_spark(run_date: str):
+def load_dim_channel_spark(start_time: str, end_time):
     ensure_wh_schema()
     s = spark("Load DIM Channel")
     s.sparkContext.setLogLevel("ERROR")
 
-    d = run_date
     df = (_read_pg_query(s, f"""
         SELECT channel_id, channel_name, channel_type, commission_rate, monthly_fixed_cost, customer_acquisition_cost
         FROM {PG_SCHEMA_STG}.stg_channel_performance
-        WHERE order_date = DATE'{d}'
+        WHERE updated_at >= '{start_time}' and updated_at < '{end_time}'
     """)
         .select(
         "channel_id",
@@ -220,15 +219,14 @@ def load_dim_channel_spark(run_date: str):
     # new_dim_cache.show()
     s.stop()
 
-def load_dim_product_spark(run_date: str):
+def load_dim_product_spark(start_time: str, end_time: str):
     ensure_wh_schema()
     s = spark("Load DIM Product")
 
-    d = run_date
     df = (_read_pg_query(s, f"""
             SELECT product_id, product_name, category, brand, supplier, stock, cost_price, unit_price, product_status
             FROM {PG_SCHEMA_STG}.stg_sales_transactions
-            WHERE order_date = DATE'{d}'
+            WHERE updated_at >= '{start_time}' and updated_at < '{end_time}'
         """)
           .select(
         "product_id",
@@ -302,6 +300,7 @@ def load_dim_product_spark(run_date: str):
 
     new_dim_cache = new_dim.cache()
     new_dim_cache.count()
+    # new_dim_cache.show(truncate = False)
     ch_exec("DELETE FROM retail.dim_product WHERE to_date is NULL")
 
     _write_ch(new_dim_cache, "retail.dim_product")
@@ -333,19 +332,19 @@ def load_dim_date_spark(start_date="2024-01-01", end_date="2026-12-31"):
     _write_ch(df, "retail.dim_date")
     s.stop()
 
-def load_fact_sales_spark(run_date:str):
+def load_fact_sales_spark(start_time:str, end_time: str):
     """
     Idempotent load for a specific day from staging.stg_sales_transactions.
     """
     ensure_wh_schema()
     s = spark("Load FACT Sales")
-    d = run_date
+
     # lọc theo ngày để pushdown ở Postgres
     q = f"""
       SELECT order_date, order_id, order_item_id, channel_id, product_id,
              qty, unit_price, discount_amount, subtotal, cost_at_sale, profit_amount
       FROM {PG_SCHEMA_STG}.stg_sales_transactions
-      WHERE order_date = DATE '{d}'
+      WHERE updated_at >= '{start_time}' and updated_at < '{end_time}'
     """
 
     df = _read_pg_query(s, q).select(
@@ -369,46 +368,37 @@ def load_fact_sales_spark(run_date:str):
         F.col("profit_amount").cast(T.DecimalType(18, 2)).alias("profit_amount"),
     )
 
-    ## i don't know what i am doing
-    ## get product_id, channel_id, order_id, order_item_id
-    channel_ids = df.select("channel_id").distinct()
-    order_ids = df.select("order_id").distinct()
-    product_ids = df.select("product_id").distinct()
-    order_item_ids = df.select("order_item_id").distinct()
+
     s = spark("Load DIM Channel")
     dim_channel = _read_ch_query(s, """select channel_id, channel_key from dim_channel where to_date is NULL """) #.alias("ch")
-    dim_product = _read_ch_query(s, """select product_id, product_key from dim_product """) #.alias("pr")
-    #
-    # dim = dim_channel.alias("ch")
-    # dim = dim_channel.alias("ch")
+    dim_product = _read_ch_query(s, """select product_id, product_key from dim_product where to_date is NULL """) #.alias("pr")
+
     dim_channel.show()
     df.printSchema()
     df = (df.join(dim_channel, "channel_id", how="left" )
             .join(dim_product, "product_id", how="left" )
             .select('order_date', 'date_key', dim_channel["channel_key"] , dim_product['product_key'] , 'order_id', 'order_item_id', 'qty', 'unit_price', 'discount', 'amount', 'cost_amount', 'profit_amount')
             .drop(dim_channel["channel_id"] , dim_product["product_id"]))
-    #
-    # UNKNOWN_KEY = dim_channel.filter("channel_id = 0 ").first()["channel_key"]
-    # print(UNKNOWN_KEY)
-    # df.fillna({'channel_id' : UNKNOWN_KEY})
 
-    # dimension_key_sql = f"""select """
-    # _read_ch_query("Load Dimensions key for fact sales", dimension_key_sql)
-
+    df = df.withColumn('inserted_time', F.lit(start_time).cast(T.TimestampNTZType()))
     # idempotent: xoá ngày cũ ở CH rồi append
-
     df.show(truncate=False)
-    ch_exec(f"ALTER TABLE retail.fact_sales DELETE WHERE order_date = toDate('{d}')")
+    start_dt_obj = datetime.fromisoformat(start_time)
+    end_dt_obj = datetime.fromisoformat(end_time)
+    formatted_start_time = start_dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+    formatted_end_time = end_dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+    print(formatted_start_time, formatted_end_time)
+    ch_exec(f"ALTER TABLE retail.fact_sales DELETE WHERE inserted_time >= '{formatted_start_time}' and inserted_time < '{formatted_end_time}' ")
 
     _write_ch(df, "retail.fact_sales")
     s.stop()
-## 2febdb53-79c5-446f-8625-fdd100bf3e4
 
-def load_warehouse_for_date_spark(run_date:str, date_start="2024-01-01", date_end="2027-12-31"):
-    load_dim_channel_spark(run_date)
-    load_dim_product_spark(run_date)
-    load_dim_date_spark(date_start, date_end)
-    load_fact_sales_spark(run_date)
+#
+# def load_warehouse_for_date_spark(run_date:str, date_start="2024-01-01", date_end="2027-12-31"):
+#     load_dim_channel_spark(run_date)
+#     load_dim_product_spark(run_date)
+#     load_dim_date_spark(date_start, date_end)
+#     load_fact_sales_spark(run_date)
 
 if __name__ == '__main__':
     # d = date(day = 14, month = 1 , year = 2025)
@@ -424,22 +414,19 @@ if __name__ == '__main__':
 
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--date", required=True)
+    parser.add_argument("--start_time", required=True, help="yyyy-mm-dd, ví dụ 2025-01-15")
+    parser.add_argument("--end_time", required=True, help="yyyy-mm-dd, ví dụ 2025-01-15")
     parser.add_argument("--job", required=True)
     args = parser.parse_args()
 
-    execution_date = args.date
+
     job = args.job
 
     if job == "dim_channel":
-        load_dim_channel_spark(execution_date)
+        load_dim_channel_spark(args.start_time, args.end_time)
     if job == "dim_product":
-        load_dim_product_spark(execution_date)
+        load_dim_product_spark(args.start_time, args.end_time)
     if job == "fact_sale":
-        load_fact_sales_spark(execution_date)
+        load_fact_sales_spark(args.start_time, args.end_time)
     if job == "dim_date":
-        load_dim_date_spark(execution_date.strftime("%Y%m%d"), execution_date)
-
-
-
-    # load_warehouse_for_date_spark(d1.strftime("%Y%m%d"))
+        load_dim_date_spark(args.start_time.strftime("%Y%m%d"), args.end_time.strftime("%Y%m%d"))

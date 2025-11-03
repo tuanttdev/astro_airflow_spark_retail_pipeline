@@ -1,3 +1,4 @@
+import datetime
 import os
 import argparse
 from datetime import date, timedelta
@@ -24,8 +25,8 @@ SRC_SCHEMA = "public"   # source schema
 
 ## --------------------------------------------------------------------
 UNKNOWN_STRING_VALUE = os.getenv( "UNKNOWN_STRING_VALUE" , 'UNKNOWN')
-UNKNOWN_NUMBER_VALUE = os.getenv( "UNKNOWN_NUMBER_VALUE" , 0)
-UNKNOWN_ID = os.getenv( "UNKNOWN_ID" , 0)
+UNKNOWN_NUMBER_VALUE = int(os.getenv( "UNKNOWN_NUMBER_VALUE" , 0))
+UNKNOWN_ID = int(os.getenv( "UNKNOWN_ID" , 0))
 
 ## --------------------------------------------------------------------
 
@@ -103,10 +104,10 @@ def ensure_schema_and_tables():
     """
     pg_execute(ddl_sales_tx)
 
-def delete_partition(table: str, part_col: str, part_value: str):
+def delete_partition(table: str, part_col: str, start_time: str, end_time):
     """Idempotent: delete that day's data before appending."""
-    sql = f'DELETE FROM {table} WHERE {part_col} = %s;'
-    pg_execute(sql, (part_value,))
+    sql = f'DELETE FROM {table} WHERE {part_col} >= %s and {part_col} < %s;'
+    pg_execute(sql, (start_time,end_time))
 
 def write_df_to_pg(df, table: str):
     (df.write
@@ -122,17 +123,18 @@ def write_df_to_pg(df, table: str):
 # ---------------------------------------------------------------------
 # Sources as DataFrames (with pushdown predicates)
 # ---------------------------------------------------------------------
-def read_orders(spark, d_str):
+def read_orders(spark, start_time, end_time):
+
     return (spark.read.format("jdbc")
             .option("url", PG_URL)
-            .option("dbtable", f"(SELECT * FROM {SRC_SCHEMA}.orders WHERE order_date = DATE '{d_str}') o")
+            .option("dbtable", f"(SELECT * FROM {SRC_SCHEMA}.orders WHERE updated_at >= '{start_time}' and updated_at < '{end_time}' ) ")
             .option("user", PG_USER).option("password", PG_PW)
             .option("driver", PG_DRIVER).load())
 
-def read_order_items(spark):
+def read_order_items(spark, start_time, end_time):
     return (spark.read.format("jdbc")
             .option("url", PG_URL)
-            .option("dbtable", f"(SELECT * FROM {SRC_SCHEMA}.order_items) i")
+            .option("dbtable", f"(SELECT * FROM {SRC_SCHEMA}.order_items i where updated_at >= '{start_time}' and updated_at < '{end_time}' ) ")
             .option("user", PG_USER).option("password", PG_PW)
             .option("driver", PG_DRIVER).load())
 
@@ -153,15 +155,13 @@ def read_channels(spark):
 # ---------------------------------------------------------------------
 # Job 1: STG_SalesTransactions
 # ---------------------------------------------------------------------
-def job_stg_sales_transactions(spark, run_date: str):
+def job_stg_sales_transactions(spark, start_time: str, end_time: str):
     ensure_schema_and_tables()
 
+    o = read_orders(spark, start_time, end_time)
+    o.show()
 
-
-    o = read_orders(spark, run_date)
-    # o.show()
-
-    i = read_order_items(spark)
+    i = read_order_items(spark, start_time, end_time)
     p = read_products(spark)
     c = read_channels(spark)
 
@@ -180,7 +180,7 @@ def job_stg_sales_transactions(spark, run_date: str):
     df2 = (
         df.select(
 
-            F.lit(run_date).cast(T.DateType()).alias("run_date"),
+            F.lit(start_time).cast(T.DateType()).alias("run_date"),
             F.col("o.order_date").cast(T.DateType()).alias("order_date"),
             F.col("o.order_id").alias("order_id"),
             F.col("i.item_id").alias("order_item_id"),
@@ -214,8 +214,8 @@ def job_stg_sales_transactions(spark, run_date: str):
             F.col("o.payment_method").alias("payment_method"),
             F.col("o.status").alias("status"),
 
-            F.current_timestamp().alias("created_at"),
-            F.current_timestamp().alias("updated_at"),
+            F.col("o.created_at").alias("created_at"),
+            F.col("o.updated_at").alias("updated_at"),
         )
     )
     ## handle null value
@@ -227,18 +227,18 @@ def job_stg_sales_transactions(spark, run_date: str):
 
     # idempotent write
     target = f"{STG_SCHEMA}.stg_sales_transactions"
-    delete_partition(target, "order_date", run_date)
+    delete_partition(target, "updated_at", start_time, end_time)
     # df2.show()
     write_df_to_pg(df2, target)
 
 # ---------------------------------------------------------------------
 # Job 2: STG_ChannelPerformance
 # ---------------------------------------------------------------------
-def job_stg_channel_performance(spark, run_date: str):
+def job_stg_channel_performance(spark, start_time: str, end_time:str):
     ensure_schema_and_tables()
 
-    o = read_orders(spark, run_date)
-    i = read_order_items(spark)
+    o = read_orders(spark, start_time, end_time)
+    i = read_order_items(spark, start_time, end_time)
     ch = read_channels(spark)
 
     # base joins
@@ -264,30 +264,16 @@ def job_stg_channel_performance(spark, run_date: str):
                     orders_agg.channel == F.col("channel_id"), "left")
              )
 
-    # days in month for fixed cost allocation
-    y, m, d = [int(x) for x in run_date.split("-")]
-    dim = calendar.monthrange(y, m)[1]
-    days_in_month = float(dim)
-
     df2 = (joined
-        .withColumn("run_date", F.lit(run_date).cast(T.DateType()))
+        .withColumn("run_date", F.lit(start_time).cast(T.DateType()))
         .withColumn("commission_rate", F.coalesce(F.col("commission_rate"), F.lit(0.0)))
         .withColumn("monthly_fixed_cost", F.coalesce(F.col("monthly_fixed_cost"), F.lit(0.0)))
         .withColumn("customer_acquisition_cost", F.coalesce(F.col("avg_acquisition_cost"), F.lit(0.0)))
         .withColumn("order_count", F.coalesce(F.col("orders"), F.lit(0)))
         .withColumn("revenue", F.coalesce(F.col("gross_revenue"), F.lit(0)).cast(T.DecimalType(18,2)))
-        .withColumn("commission_cost",
-                    (F.col("gross_revenue") * F.col("commission_rate")).cast(T.DecimalType(18,2)))
-        .withColumn("cac_cost",
-                    (F.col("orders") * F.col("avg_acquisition_cost")).cast(T.DecimalType(18,2)))
-        .withColumn("fixed_cost_alloc",
-                    (F.col("monthly_fixed_cost") / F.lit(days_in_month)).cast(T.DecimalType(18,2)))
-        .withColumn("total_cost",
-                    (F.col("commission_cost") + F.col("cac_cost") + F.col("fixed_cost_alloc")).cast(T.DecimalType(18,2)))
-        .withColumn("net_revenue",
-                    (F.col("gross_revenue") - F.col("total_cost")).cast(T.DecimalType(18,2)))
-        .withColumn("created_at", F.current_timestamp())
-        .withColumn("updated_at", F.current_timestamp())
+
+        .withColumn("created_at", F.lit(start_time).cast(T.TimestampType()))
+        .withColumn("updated_at", F.lit(start_time).cast(T.TimestampType()))
         .select(
             "run_date",
             F.col("order_date"),
@@ -305,7 +291,7 @@ def job_stg_channel_performance(spark, run_date: str):
 
     # df2.printSchema()
     target = f"{STG_SCHEMA}.stg_channel_performance"
-    delete_partition(target, "order_date", run_date)
+    delete_partition(target, "updated_at", start_time, end_time)
     write_df_to_pg(df2, target)
 
 # ---------------------------------------------------------------------
@@ -318,19 +304,20 @@ if __name__ == "__main__":
     # replace --date value and --job value
     #
     parser = argparse.ArgumentParser()
-    parser.add_argument("--date", required=True, help="yyyy-mm-dd, ví dụ 2025-01-15")
+    parser.add_argument("--start_time", required=True, help="yyyy-mm-dd, ví dụ 2025-01-15")
+    parser.add_argument("--end_time", required=True, help="yyyy-mm-dd, ví dụ 2025-01-15")
     parser.add_argument("--job", required=True,
                         choices=["sales_tx","channel_perf","both"],
                         help="chạy job nào")
     args = parser.parse_args()
 
     spark = get_spark()
-
+    print(args.start_time, args.end_time)
     if args.job in ("sales_tx","both"):
-        job_stg_sales_transactions(spark, args.date)
+        job_stg_sales_transactions(spark, args.start_time, args.end_time)
 
     if args.job in ("channel_perf","both") :
-        job_stg_channel_performance(spark, args.date)
+        job_stg_channel_performance(spark, args.start_time, args.end_time)
 
     # job_stg_sales_transactions(spark, "2025-01-15")
 

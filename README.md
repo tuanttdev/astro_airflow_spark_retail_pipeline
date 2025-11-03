@@ -6,23 +6,31 @@ Project Description
 =======
 Deploy a simple data pipeline with astro + airflow and spark on docker locally. <br> 
 Data in this project is mainly focus on a Electronic Retail Brand named Techo with 3 main selling channel include: Online, In Store, Mobile <br>
-The data source come from a Postgres Backend DataBase, extract and process using pySpark then load to ClickHouse as a DataWarehouse <br>
+The data source come from a Postgres Backend DataBase, extract and transform using pySpark then load to ClickHouse as a DataWarehouse <br>
 Data visualization by using Power BI <br>
 
-Tech Architecture:
-<img source="./img/" > 
+System Architecture:
+<img source="./img/System_Architecture.png" > 
 
 Data flow and schema structure: Using star schema for Data Model in Datawarehouse and SCD type 2 to store history of dimension tables <br>
 Currently I have only completed part of the data schema below including tables: product, channel, sale, the rest will be updated later.
 <br>
-<img height="100" src="./img/staging_wh.png" width="300"/>
-  
+<img src="./img/staging_wh.png"/>
+
+Airflow is used to orch
+
 Dashboard:
-<img source="./img/" >
+<b>Over view</b> 
+
+<img source="./img/executive_overview.png" >
+
+<b>Channel Performance</b>
+
+<img source="./img/channel_performance.png" >
 
 How to Install and Run the Project
 ==================================
-Requirements: <br> 
+Prerequisites: <br> 
 - Python 3.11 <br>
 - Docker Engine, Compose <br> 
 - Astronomer CLI [You can follow the instruction here](https://www.astronomer.io/docs/astro/cli/install-cli) <br>
@@ -67,7 +75,8 @@ You should also be able to access your Postgres Database at 'localhost:5432/post
 
 
 <details>
-    <summary>You can read the Instruction from Astronomer below for more information</summary>
+    <summary> <b>You can read the below instruction from Astronomer for more information</b> 
+</summary>
     
 Overview
 ========

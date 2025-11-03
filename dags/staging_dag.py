@@ -13,41 +13,52 @@ import pandas as pd
     end_date=datetime(2025, 12, 31),
     schedule="0 0 * * *",
     max_active_runs=1,
+    max_active_tasks=1,
     catchup=False,
 )
 
 def staging_dag():
-    from airflow.models import Variable
+    # from airflow.models import Variable
+    import os
+    AIRFLOW_MOUNT_DIR = "/usr/local/airflow"  # Hoac /opt/airflow, tuy thuoc vao image base cua ban
 
-    execution_date = Variable.get("current_date")
+    SPARK_APP_PATH_STAGING_JOB = os.path.join(AIRFLOW_MOUNT_DIR, "include", "script", "stg_jobs.py")
+
+    SPARK_APP_PATH_WAREHOUSE_LOADER = os.path.join(AIRFLOW_MOUNT_DIR, "include", "script", "warehouse_loaders.py")
+    #### airflow dags backfill     --start-date 2025-04-29     --end-date 2025-04-30  --rerun-failed-tasks   staging_dag
 
     packages = "org.postgresql:postgresql:42.7.4," \
                  "com.clickhouse:clickhouse-jdbc:0.6.1," \
                  "com.clickhouse:clickhouse-http-client:0.6.1," \
 
+
+
     stg_sales_transactions_job = SparkSubmitOperator(
         task_id="stg_sales_transactions_job",
         conn_id="my_spark_conn",
-        application="include/script/stg_jobs.py",
+        # application="include/script/stg_jobs.py",
+        application = SPARK_APP_PATH_STAGING_JOB,
         packages="org.postgresql:postgresql:42.7.4",
-        application_args=["--date", execution_date, "--job", "sales_tx"],
+        application_args=["--start_time", "{{ data_interval_start }}", "--end_time", "{{ data_interval_end }}", "--job", "sales_tx"],
         verbose=True,
     )
 
     stg_channel_performance_job= SparkSubmitOperator(
         task_id="stg_channel_performance_job",
         conn_id="my_spark_conn",
-        application="include/script/stg_jobs.py",
+        application=SPARK_APP_PATH_STAGING_JOB,
         packages="org.postgresql:postgresql:42.7.4",
-        application_args=["--date", execution_date, "--job", "channel_perf"],
+        application_args=["--start_time", "{{data_interval_start}}", "--end_time", "{{ data_interval_end }}",
+                          "--job", "channel_perf"],
         verbose=True,
     )
 
     load_dim_channel_job = SparkSubmitOperator(
         task_id="load_dim_channel_job",
         conn_id="my_spark_conn",
-        application="include/script/warehouse_loaders.py",
-        application_args=["--date", execution_date, "--job", "dim_channel"],
+        application=SPARK_APP_PATH_WAREHOUSE_LOADER,
+        application_args=["--start_time", "{{data_interval_start}}", "--end_time", "{{ data_interval_end }}",
+                          "--job", "dim_channel"],
         packages=packages,
         verbose=True,
     )
@@ -55,8 +66,9 @@ def staging_dag():
     load_dim_product_job = SparkSubmitOperator(
         task_id="load_dim_product_job",
         conn_id="my_spark_conn",
-        application="include/script/warehouse_loaders.py" ,
-        application_args=["--date", execution_date, "--job", "dim_product"],
+        application=SPARK_APP_PATH_WAREHOUSE_LOADER ,
+        application_args=["--start_time", "{{data_interval_start}}", "--end_time", "{{ data_interval_end }}",
+                          "--job", "dim_product"],
         packages=packages,
         verbose=True,
     )
@@ -64,8 +76,9 @@ def staging_dag():
     process_sales_data_to_warehouse_job = SparkSubmitOperator(
         task_id="process_sales_data_to_warehouse_job",
         conn_id="my_spark_conn",
-        application="include/script/warehouse_loaders.py",
-        application_args=["--date", execution_date, "--job", "fact_sale"],
+        application=SPARK_APP_PATH_WAREHOUSE_LOADER,
+        application_args=["--start_time", "{{data_interval_start}}", "--end_time", "{{ data_interval_end }}",
+                          "--job", "fact_sale"],
         packages=packages,
         verbose=True,
     )
