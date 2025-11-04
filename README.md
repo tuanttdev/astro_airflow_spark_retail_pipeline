@@ -10,7 +10,7 @@ The data source come from a Postgres Backend DataBase, extract and transform usi
 Data visualization by using Power BI <br>
 
 System Architecture:
-<img source="./img/System_Architecture.png" > 
+<img src="./img/System_Architecture.png" > 
 
 Data flow and schema structure: Using star schema for Data Model in Datawarehouse and SCD type 2 to store history of dimension tables <br>
 Currently I have only completed part of the data schema below including tables: product, channel, sale, the rest will be updated later.
@@ -22,11 +22,11 @@ Airflow is used to orch
 Dashboard:
 <b>Over view</b> 
 
-<img source="./img/executive_overview.png" >
+<img src="./img/executive_overview.png" >
 
 <b>Channel Performance</b>
 
-<img source="./img/channel_performance.png" >
+<img src="./img/channel_performance.png" >
 
 How to Install and Run the Project
 ==================================
