@@ -156,6 +156,8 @@ def load_dim_channel_spark(start_time: str, end_time):
     ).withColumn("channel_key", F.expr("uuid()"))
     .withColumn('from_date', F.now()))
 
+    df = df.dropDuplicates(subset=["channel_id"])
+
     # wh
     dim_channel = (_read_ch_query(s, f"""
                     select  channel_id, channel_key,channel_name, channel_type, commission_rate, monthly_fixed_cost, customer_acquisition_cost, is_digital, is_active, from_date, to_date
@@ -243,6 +245,8 @@ def load_dim_product_spark(start_time: str, end_time: str):
     .withColumn('from_date', F.now())
     .withColumn("profit_margin" , (F.col("selling_price") - F.col("cost_price")).cast(T.DecimalType(18,2)) ))
 
+    df = df.dropDuplicates(subset=["product_id"])
+
     # wh
     dim_product = (_read_ch_query(s, f"""
                         select product_key, product_id, product_name, category, brand, supplier, stock, cost_price, selling_price, profit_margin, product_status, from_date, to_date
@@ -307,11 +311,15 @@ def load_dim_product_spark(start_time: str, end_time: str):
 
     s.stop()
 
-def load_dim_date_spark(start_date="2024-01-01", end_date="2026-12-31"):
+def load_dim_date_spark(start_date="2024-01-01", end_date="2026-12-31", days_to_add = 365):
+
     ensure_wh_schema()
     s = spark("Load DIM Date")
     sd = datetime.strptime(start_date, "%Y-%m-%d").date()
-    ed = datetime.strptime(end_date, "%Y-%m-%d").date()
+    ed = datetime.strptime(end_date, "%Y-%m-%d").date() + timedelta(days=days_to_add)
+    print(type(sd) , sd)
+    print(type(ed) , ed)
+
     days = (ed - sd).days + 1
     df = (s.range(0, days)
             .withColumn("full_date", F.expr(f"date_add(to_date('{start_date}'), CAST(id AS INT))"))
@@ -328,7 +336,8 @@ def load_dim_date_spark(start_date="2024-01-01", end_date="2026-12-31"):
                 F.year("full_date").cast("int").alias("year"),
                 F.when(F.dayofweek("full_date").isin(1, 7), F.lit(1)).otherwise(F.lit(0)).alias("is_weekend")
             ))
-    ch_exec("TRUNCATE TABLE retail.dim_date")
+    # ch_exec("TRUNCATE TABLE retail.dim_date")
+
     _write_ch(df, "retail.dim_date")
     s.stop()
 
@@ -429,4 +438,4 @@ if __name__ == '__main__':
     if job == "fact_sale":
         load_fact_sales_spark(args.start_time, args.end_time)
     if job == "dim_date":
-        load_dim_date_spark(args.start_time.strftime("%Y%m%d"), args.end_time.strftime("%Y%m%d"))
+        load_dim_date_spark(args.start_time.split(' ')[0], args.end_time.split(' ')[0])

@@ -1,11 +1,10 @@
-# my_dag.py
 from airflow.decorators import dag, task
 from datetime import datetime
 
 from pyspark import SparkContext
 from pyspark.sql import SparkSession
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-import pandas as pd
+
 
 
 @dag(
@@ -13,11 +12,11 @@ import pandas as pd
     end_date=datetime(2025, 12, 31),
     schedule="0 0 * * *",
     max_active_runs=1,
-    max_active_tasks=1,
+    max_active_tasks=4,
     catchup=False,
 )
 
-def staging_dag():
+def etl_sale_data():
     # from airflow.models import Variable
     import os
     AIRFLOW_MOUNT_DIR = "/usr/local/airflow"  # Hoac /opt/airflow, tuy thuoc vao image base cua ban
@@ -30,7 +29,6 @@ def staging_dag():
     packages = "org.postgresql:postgresql:42.7.4," \
                  "com.clickhouse:clickhouse-jdbc:0.6.1," \
                  "com.clickhouse:clickhouse-http-client:0.6.1," \
-
 
 
     stg_sales_transactions_job = SparkSubmitOperator(
@@ -86,4 +84,4 @@ def staging_dag():
     stg_sales_transactions_job >> stg_channel_performance_job >> [load_dim_channel_job, load_dim_product_job] >> process_sales_data_to_warehouse_job
 
 
-staging_dag()
+etl_sale_data()
